@@ -44,15 +44,44 @@ struct sensor_data
 {
     // SHT30 DATA
     float sht_temp = 0;
+    float sht_temp_arr[5];
+    
     float sht_rh = 0;
+    float sht_rh_arr[5];
 
     // BMP280 DATA
     float bmp_temp = 0;
+    float bmp_temp_arr[5];
+
     float bmp_pressure = 0;
+    float bmp_pressure_arr[5];
 
     // soil sensor
     float soil_value = 0;
+
+    // all sensor use same position
+    uint32_t arr_pos = 0;
+    // sht_temp, sht_rh, bmp280 temp, bmp280 pressure
+    float previous_arr[4] = {0,0,0,0};
+    float sendout_threshold[4] = {SHT30_TEMP_THRESHOLD, SHT30_RH_THRESHOLD, BMP280_TEMP_THRESHOLD, BMP280_PRESSURE_THRESHOLD}; 
 };
+
+
+struct sensor_data_pointer
+{
+    float* sht30_raw_data;
+
+    int32_t* raw_temperature_data;
+    int32_t* raw_pressure_data;
+    float* bmp_raw_data;
+    bmp280_calib_param* bmp280_calib_param_data;
+
+    sensor_data* sensors;
+};
+
+
+// add timer
+bool on_data_acqusition_timeout(repeating_timer_t* rt);
 
 
 int main()
@@ -112,23 +141,26 @@ int main()
     pwm_init(slice_num_2, &config, true);
 
 
-    
+    // timer data structure
+    sensor_data_pointer raw_sensor_data_pointer;
+    raw_sensor_data_pointer.sht30_raw_data = sht30_data;
+    raw_sensor_data_pointer.raw_temperature_data = &raw_temperature;
+    raw_sensor_data_pointer.raw_pressure_data = &raw_pressure;
+    raw_sensor_data_pointer.bmp_raw_data = bmp_data;
+    raw_sensor_data_pointer.bmp280_calib_param_data = &params;
+    raw_sensor_data_pointer.sensors = &sensor;
+
+
+    // add a data acqusition timer
+    repeating_timer data_acqusition_timer;
+    add_repeating_timer_ms(2000, &on_data_acqusition_timeout, &raw_sensor_data_pointer, &data_acqusition_timer);
+
+
     while (true)
-    {
-        sht30_read_data(sht30_data);
-        bmp280_read_data(&raw_temperature, &raw_pressure, bmp_data, &params);
-        
-        sensor.sht_temp = sht30_data[0];
-        sensor.sht_rh = sht30_data[1];
-        sensor.bmp_temp = bmp_data[0];
-        sensor.bmp_pressure = bmp_data[1];
-
-        printf("AT+MQTTPUB=0,\"water_station/info\",\"{\\\"sht_temp\\\":%.2f\\,\\\"sht_rh\\\":%.2f\\,\\\"bmp_temp\\\":%.2f\\,\\\"bmp_pressure\\\":%.3f}\",1,0\r\n", 
-                sensor.sht_temp, sensor.sht_rh, sensor.bmp_temp, sensor.bmp_pressure);
-        
-        sleep_ms(2000);
-
+    { 
+        tight_loop_contents();     
     }
+
     return 0;
 }
 
@@ -422,5 +454,79 @@ bool on_led_timeout(repeating_timer_t* rt)
         led_status = !led_status;
         gpio_put(PICO_DEFAULT_LED_PIN, led_status);
     }
+    return true;
+}
+
+
+// data acqusition logic
+// 1. get raw data every two seconds
+// 2. save to the data array
+// 3. every 10s compare average data with the previous data, if 
+// temperature no more than 0.2℃，RH no more than 0.2%，pressure no more than 5pa，do not send out data
+bool on_data_acqusition_timeout(repeating_timer_t* rt)
+{
+    auto raw_data_pointer = static_cast<sensor_data_pointer*>(rt->user_data);
+    // start data acqusition
+
+    sht30_read_data(raw_data_pointer->sht30_raw_data);
+    bmp280_read_data(raw_data_pointer->raw_temperature_data, raw_data_pointer->raw_pressure_data, 
+                     raw_data_pointer->bmp_raw_data, raw_data_pointer->bmp280_calib_param_data);
+
+    raw_data_pointer->sensors->sht_temp = raw_data_pointer->sht30_raw_data[0];
+    raw_data_pointer->sensors->sht_rh = raw_data_pointer->sht30_raw_data[1];
+    raw_data_pointer->sensors->bmp_temp = raw_data_pointer->bmp_raw_data[0];
+    raw_data_pointer->sensors->bmp_pressure = raw_data_pointer->bmp_raw_data[1];
+
+
+    // check array position, send out or not
+    
+    if (raw_data_pointer->sensors->arr_pos > 5)
+    {
+
+        // check send out data or not
+        float sum[4] = {0,0,0,0};
+        float average[4] = {0,0,0,0};
+        for (size_t i = 0; i < 5; i++)
+        {
+            sum[0] += raw_data_pointer->sensors->sht_temp_arr[i];
+            sum[1] += raw_data_pointer->sensors->sht_rh_arr[i];
+            sum[2] += raw_data_pointer->sensors->bmp_temp_arr[i];
+            sum[3] += raw_data_pointer->sensors->bmp_pressure_arr[i];
+        }
+
+        for (size_t i = 0; i < 4; i++)
+        {
+            average[i] = sum[i] / 5;
+        }
+
+        bool is_perform_send_data = false;
+        for (size_t i = 0; i < 4; i++)
+        {
+            if (std::abs((average[i] - raw_data_pointer->sensors->previous_arr[i])) >= raw_data_pointer->sensors->sendout_threshold[i])
+            {
+                is_perform_send_data = true;
+                // update previous data
+                raw_data_pointer->sensors->previous_arr[i] = average[i];
+            }
+        }
+ 
+        if (is_perform_send_data)
+        {
+            // send out data by MQTT
+            printf("AT+MQTTPUB=0,\"water_station/info\",\"{\\\"sht_temp\\\":%.1f\\,\\\"sht_rh\\\":%.1f\\,\\\"bmp_temp\\\":%.1f\\,\\\"bmp_pressure\\\":%.3f}\",1,0\r\n", 
+                raw_data_pointer->sensors->previous_arr[0], raw_data_pointer->sensors->previous_arr[1], 
+                raw_data_pointer->sensors->previous_arr[2], raw_data_pointer->sensors->previous_arr[3]);
+        }
+
+        raw_data_pointer->sensors->arr_pos = 0;
+    }
+
+    // save to the array
+    raw_data_pointer->sensors->sht_temp_arr[raw_data_pointer->sensors->arr_pos] = raw_data_pointer->sensors->sht_temp;
+    raw_data_pointer->sensors->sht_rh_arr[raw_data_pointer->sensors->arr_pos] = raw_data_pointer->sensors->sht_rh;
+    raw_data_pointer->sensors->bmp_temp_arr[raw_data_pointer->sensors->arr_pos] = raw_data_pointer->sensors->bmp_temp;
+    raw_data_pointer->sensors->bmp_pressure_arr[raw_data_pointer->sensors->arr_pos] = raw_data_pointer->sensors->bmp_pressure;
+    
+    raw_data_pointer->sensors->arr_pos++;
     return true;
 }

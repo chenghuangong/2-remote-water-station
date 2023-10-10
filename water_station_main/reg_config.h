@@ -1,3 +1,13 @@
+// data send out threshold
+// ℃
+#define SHT30_TEMP_THRESHOLD 0.2
+// %
+#define SHT30_RH_THRESHOLD 0.3
+// ℃
+#define BMP280_TEMP_THRESHOLD 0.3
+// kpa
+#define BMP280_PRESSURE_THRESHOLD 0.005
+
 // ==============================================UART==============================================
 #define UART_BAUD_RATE 115200
 #define UART_ID uart0

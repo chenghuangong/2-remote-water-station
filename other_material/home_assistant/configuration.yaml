@@ -1,0 +1,50 @@
+
+# Loads default set of integrations. Do not remove.
+default_config:
+
+# Load frontend themes from the themes folder
+frontend:
+  themes: !include_dir_merge_named themes
+
+automation: !include automations.yaml
+script: !include scripts.yaml
+scene: !include scenes.yaml
+
+
+# MQTT entity test
+# Example configuration.yaml entry
+mqtt:
+ - switch:
+     unique_id: mqtt_switch1
+     name: "water_station_pump1"
+     state_topic: "water_station/state"
+     command_topic: "water_station/pump_cmd"
+     payload_on: "114000"
+     payload_off: "104000"
+ 
+ - sensor:
+     unique_id: mqtt_sensor_temperature1
+     name: "water_station_temperature_sht30"
+     state_topic: "water_station/info"
+     value_template: "{{value_json.sht_temp}}"
+
+ - sensor:
+     unique_id: mqtt_sensor_temperature2 
+     name: "water_station_temperature_bmp280"
+     state_topic: "water_station/info"
+     value_template: "{{value_json.bmp_temp}}"
+
+
+ - sensor:
+     unique_id: mqtt_sensor_rh1
+     name: "water_station_rh_sht30"
+     state_topic: "water_station/info"
+     value_template: "{{value_json.sht_rh}}"
+
+
+ - sensor:
+    unique_id: mqtt_sensor_pressure1 
+    name: "water_station_pressure_bmp280"
+    state_topic: "water_station/info"
+    value_template: "{{value_json.bmp_pressure}}"
+
