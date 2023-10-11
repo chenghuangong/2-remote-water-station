@@ -2,6 +2,7 @@
 #include <pico/stdlib.h>
 #include <hardware/i2c.h>
 #include <hardware/pwm.h>
+#include <hardware/adc.h>
 #include "reg_config.h"
 #include <string>
 
@@ -40,6 +41,10 @@ void esp8266_on_uart_rx();
 void esp8266_handle_recv_mqtt_msg(char* buffer);
 
 
+// read adc value
+void adc_read_data(uint16_t* data);
+
+
 struct sensor_data
 {
     // SHT30 DATA
@@ -57,7 +62,8 @@ struct sensor_data
     float bmp_pressure_arr[5];
 
     // soil sensor
-    float soil_value = 0;
+    uint16_t soil_value = 0;
+    uint32_t soil_send_out_counter = 0; // send out data per 60s
 
     // all sensor use same position
     uint32_t arr_pos = 0;
@@ -139,6 +145,13 @@ int main()
     pwm_set_gpio_level(PUMP2_PIN, 0);
     pwm_init(slice_num_1, &config, true);
     pwm_init(slice_num_2, &config, true);
+
+
+    // init adc for soil detect
+    adc_init();
+    // Make sure GPIO is high-impedance, no pullups etc
+    adc_gpio_init(ADC_SOIL_DETECTOR_PIN);
+
 
 
     // timer data structure
@@ -458,6 +471,13 @@ bool on_led_timeout(repeating_timer_t* rt)
 }
 
 
+void adc_read_data(uint16_t* data)
+{
+    adc_select_input(0);
+    *data = adc_read();
+}
+
+
 // data acqusition logic
 // 1. get raw data every two seconds
 // 2. save to the data array
@@ -471,6 +491,7 @@ bool on_data_acqusition_timeout(repeating_timer_t* rt)
     sht30_read_data(raw_data_pointer->sht30_raw_data);
     bmp280_read_data(raw_data_pointer->raw_temperature_data, raw_data_pointer->raw_pressure_data, 
                      raw_data_pointer->bmp_raw_data, raw_data_pointer->bmp280_calib_param_data);
+    adc_read_data(&(raw_data_pointer->sensors->soil_value));
 
     raw_data_pointer->sensors->sht_temp = raw_data_pointer->sht30_raw_data[0];
     raw_data_pointer->sensors->sht_rh = raw_data_pointer->sht30_raw_data[1];
@@ -478,6 +499,7 @@ bool on_data_acqusition_timeout(repeating_timer_t* rt)
     raw_data_pointer->sensors->bmp_pressure = raw_data_pointer->bmp_raw_data[1];
 
 
+    // ============send out temp, humidity, pressure data=====================
     // check array position, send out or not
     
     if (raw_data_pointer->sensors->arr_pos > 5)
@@ -528,5 +550,11 @@ bool on_data_acqusition_timeout(repeating_timer_t* rt)
     raw_data_pointer->sensors->bmp_pressure_arr[raw_data_pointer->sensors->arr_pos] = raw_data_pointer->sensors->bmp_pressure;
     
     raw_data_pointer->sensors->arr_pos++;
+
+    // ============send out temp, humidity, pressure data=====================
+
+    // =========================send out soil data============================
+    printf("AT+MQTTPUB=0,\"water_station/info/soil\",\"{\\\"soil1\\\":%d}\",1,0\r\n", raw_data_pointer->sensors->soil_value);
+
     return true;
 }

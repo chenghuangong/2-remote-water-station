@@ -1,6 +1,6 @@
 add_executable(water_station_main main.cpp)
 
-target_link_libraries(water_station_main pico_stdlib hardware_i2c hardware_pwm)
+target_link_libraries(water_station_main pico_stdlib hardware_i2c hardware_pwm hardware_adc)
 
 pico_add_extra_outputs(water_station_main)
 

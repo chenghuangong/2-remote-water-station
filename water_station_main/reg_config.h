@@ -8,6 +8,10 @@
 // kpa
 #define BMP280_PRESSURE_THRESHOLD 0.005
 
+// ==============================================ADC FOR soil det===================================
+#define ADC_SOIL_DETECTOR_PIN 26
+
+
 // ==============================================UART==============================================
 #define UART_BAUD_RATE 115200
 #define UART_ID uart0
