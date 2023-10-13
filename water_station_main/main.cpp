@@ -8,8 +8,10 @@
 
 // LED indicator
 bool led_status = false;
-bool stop_flash = false;
+repeating_timer led_timer;
+volatile uint8_t fast_blink_counter = 0;
 bool on_led_timeout(repeating_timer_t* rt);
+void flash_led(uint8_t cycles);
 
 // sht30
 float sht30_data[2]; // temperature + humidity
@@ -99,8 +101,7 @@ int main()
     // flash led to indicate mcu status
     gpio_init(PICO_DEFAULT_LED_PIN);
     gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    repeating_timer led_timer;
-    add_repeating_timer_ms(1000, &on_led_timeout, nullptr, &led_timer);
+    add_repeating_timer_ms(LED_BLINK_TIME_INTERVAL, &on_led_timeout, nullptr, &led_timer);
      
 
     // I2C is "open drain", pull ups to keep signal high when no data is being sent
@@ -152,8 +153,6 @@ int main()
     // Make sure GPIO is high-impedance, no pullups etc
     adc_gpio_init(ADC_SOIL_DETECTOR_PIN);
 
-
-
     // timer data structure
     sensor_data_pointer raw_sensor_data_pointer;
     raw_sensor_data_pointer.sht30_raw_data = sht30_data;
@@ -163,10 +162,9 @@ int main()
     raw_sensor_data_pointer.bmp280_calib_param_data = &params;
     raw_sensor_data_pointer.sensors = &sensor;
 
-
     // add a data acqusition timer
     repeating_timer data_acqusition_timer;
-    add_repeating_timer_ms(2000, &on_data_acqusition_timeout, &raw_sensor_data_pointer, &data_acqusition_timer);
+    add_repeating_timer_ms(GLOBAL_TIMER_INTERVAL, &on_data_acqusition_timeout, &raw_sensor_data_pointer, &data_acqusition_timer);
 
 
     while (true)
@@ -185,24 +183,31 @@ void sht30_init()
     buf[0] = 0x21;
     buf[1] = 0x30;
 
+    #ifdef ENABLE_SHT30_SINGLE_READ
+    
+    #else
     // start Periodic Mode
     i2c_write_blocking(i2c_default, ADDR_SHT30, buf, 2, false);
+    #endif
 }
 
 void sht30_read_data(float* data)
-{
-    uint8_t buf[2];
-    uint8_t buf2[6];
+{ 
+    uint8_t sht30_raw_data[6];
+    
+    #ifdef ENABLE_SHT30_SINGLE_READ
+    uint8_t command[2] = {0x2c, 0x06};
+    i2c_write_blocking(i2c_default, ADDR_SHT30, command, 2, false);
+    i2c_read_blocking(i2c_default, ADDR_SHT30, sht30_raw_data, 6, false);
+    #else
+    // Periodic Mode just read value
+    uint8_t command[2] = {0xe0, 0x00};
+    i2c_write_blocking(i2c_default, ADDR_SHT30, command, 2, true);            // fetch data
+    i2c_read_blocking(i2c_default, ADDR_SHT30, sht30_raw_data, 6, false); // data format: temp msb, temp lsb, crc, hum msb, hum lsb, crc
+    #endif
 
-    buf[0] = 0xE0;
-    buf[1] = 0x00;
-
-    i2c_write_blocking(i2c_default, ADDR_SHT30, buf, 2, true);  // fetch data
-    i2c_read_blocking(i2c_default, ADDR_SHT30, buf2, 6, false); // data format: temp msb, temp lsb, crc, hum msb, hum lsb, crc 
-
-    float rh = 100 * ( ((buf2[3] << 8) | buf2[4] ) / 65535.0);
-    float temp = 175 * ( ((buf2[0] << 8) | buf2[1] ) / 65535.0) - 45;
-
+    float rh = 100 * ( ((sht30_raw_data[3] << 8) | sht30_raw_data[4] ) / 65535.0);
+    float temp = 175 * ( ((sht30_raw_data[0] << 8) | sht30_raw_data[1] ) / 65535.0) - 45;
     data[0] = temp;
     data[1] = rh;
     // printf("temp = %.2f℃, rh = %.2f%\n", t, rh);
@@ -433,7 +438,8 @@ void esp8266_on_uart_rx()
     if (buffer_length == 49 && rx_buffer[39] == '6')
     {
         // TODO data received
-        stop_flash = !stop_flash;
+        // flash led
+        flash_led(8);
         esp8266_handle_recv_mqtt_msg(rx_buffer);
     }
     buffer_length = 0;
@@ -460,13 +466,25 @@ void esp8266_handle_recv_mqtt_msg(char* buffer)
 }
 
 
+void flash_led(uint8_t cycles)
+{
+    fast_blink_counter = cycles;
+    // call on led timeout
+    cancel_repeating_timer(&led_timer);
+    add_repeating_timer_ms(30, &on_led_timeout, nullptr, &led_timer);
+}
+
+
 bool on_led_timeout(repeating_timer_t* rt)
 {
-    if (!stop_flash)
+    // speed up blink for 8 times
+    if (fast_blink_counter != 0 && --fast_blink_counter == 0)
     {
-        led_status = !led_status;
-        gpio_put(PICO_DEFAULT_LED_PIN, led_status);
+        // delay 1000ms
+        rt->delay_us = 1000 * LED_BLINK_TIME_INTERVAL;
     }
+    led_status = !led_status;
+    gpio_put(PICO_DEFAULT_LED_PIN, led_status);
     return true;
 }
 
@@ -486,13 +504,11 @@ void adc_read_data(uint16_t* data)
 bool on_data_acqusition_timeout(repeating_timer_t* rt)
 {
     auto raw_data_pointer = static_cast<sensor_data_pointer*>(rt->user_data);
-    // start data acqusition
-
+    // start sht30 and bmp data acqusition
     sht30_read_data(raw_data_pointer->sht30_raw_data);
     bmp280_read_data(raw_data_pointer->raw_temperature_data, raw_data_pointer->raw_pressure_data, 
                      raw_data_pointer->bmp_raw_data, raw_data_pointer->bmp280_calib_param_data);
-    adc_read_data(&(raw_data_pointer->sensors->soil_value));
-
+    
     raw_data_pointer->sensors->sht_temp = raw_data_pointer->sht30_raw_data[0];
     raw_data_pointer->sensors->sht_rh = raw_data_pointer->sht30_raw_data[1];
     raw_data_pointer->sensors->bmp_temp = raw_data_pointer->bmp_raw_data[0];
@@ -553,8 +569,15 @@ bool on_data_acqusition_timeout(repeating_timer_t* rt)
 
     // ============send out temp, humidity, pressure data=====================
 
-    // =========================send out soil data============================
-    printf("AT+MQTTPUB=0,\"water_station/info/soil\",\"{\\\"soil1\\\":%d}\",1,0\r\n", raw_data_pointer->sensors->soil_value);
 
+    // =========================get and out soil data============================
+    // add delay time: 30 * timer interval
+    if (raw_data_pointer->sensors->soil_send_out_counter++ > SOIL_DATA_DELAY_CYCLES)
+    {
+        raw_data_pointer->sensors->soil_send_out_counter = 0;
+        adc_read_data(&(raw_data_pointer->sensors->soil_value));
+        printf("AT+MQTTPUB=0,\"water_station/info/soil\",\"{\\\"soil1\\\":%d}\",1,0\r\n", raw_data_pointer->sensors->soil_value);
+    }
+    
     return true;
 }

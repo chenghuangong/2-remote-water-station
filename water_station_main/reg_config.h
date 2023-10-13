@@ -7,6 +7,10 @@
 #define BMP280_TEMP_THRESHOLD 0.3
 // kpa
 #define BMP280_PRESSURE_THRESHOLD 0.005
+// data acqusition time interval ms
+#define GLOBAL_TIMER_INTERVAL 10000
+#define LED_BLINK_TIME_INTERVAL 1000
+#define SOIL_DATA_DELAY_CYCLES 30
 
 // ==============================================ADC FOR soil det===================================
 #define ADC_SOIL_DETECTOR_PIN 26
@@ -28,6 +32,7 @@
 // ==============================================SHT30==============================================
 
 #define ADDR_SHT30 _u(0x44)
+#define ENABLE_SHT30_SINGLE_READ
 
 // ==============================================BMP280==============================================
 // 并且需要将SDO连接到GND上，这样地址就是0x76
